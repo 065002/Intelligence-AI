@@ -1,0 +1,8 @@
+[server]
+headless = true
+
+[global]
+developmentMode = false
+
+[theme]
+base="dark"
