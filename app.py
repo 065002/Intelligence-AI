@@ -568,13 +568,34 @@ if page == "🌐 Website Overview":
     # ── Module structure ──────────────────────────────────────
     divider("DETECTED SITE MODULES")
     section_desc(
-        "URL path patterns identify site sections: /login → Authentication, /cart → Cart, /blog → Blog/Content. "
-        "Each card shows page count, average load time, and error count for that section."
+        "Each section is identified from the URL path — e.g. /login → Authentication, /cart → Cart. "
+        "Issue counts are pulled from the full issue dataset, so every problem type is included "
+        "(missing tags, broken links, slow load, form issues — not just HTTP errors)."
     )
+
+    # Build a lookup: module → all issues in that module (from the real issue dataset)
+    module_issue_lookup: dict = {}
+    if df is not None and not df.empty:
+        for mod_name, grp in df.groupby("module"):
+            module_issue_lookup[mod_name] = {
+                "total":  len(grp),
+                "high":   int((grp["severity"] == "High").sum()),
+                "open":   int(grp["is_open"].sum()),
+                "types":  grp["issue_type"].value_counts().head(3).to_dict(),
+            }
 
     module_groups: dict = {}
     for p in pages:
         module_groups.setdefault(p.get("module", "Unknown"), []).append(p)
+
+    # Sort modules by issue count descending so most problematic appears first
+    module_groups = dict(
+        sorted(
+            module_groups.items(),
+            key=lambda x: module_issue_lookup.get(x[0], {}).get("total", 0),
+            reverse=True,
+        )
+    )
 
     n_cols = min(len(module_groups), 4)
     if n_cols > 0:
@@ -582,30 +603,71 @@ if page == "🌐 Website Overview":
         for i, (mod, mpages) in enumerate(module_groups.items()):
             lts    = [p["load_time"] for p in mpages if p.get("load_time", 0) > 0]
             avg_lt = float(np.mean(lts)) if lts else 0.0
-            errs   = sum(1 for p in mpages if p.get("status_code") in (404, 500, 502, 503) or p.get("error"))
-            e_clr  = "#ff4444" if errs > 0 else "#44ff44"
+
+            # Real issue counts from the issue dataset
+            mod_issues = module_issue_lookup.get(mod, {"total": 0, "high": 0, "open": 0, "types": {}})
+            total_iss  = mod_issues["total"]
+            high_iss   = mod_issues["high"]
+            open_iss   = mod_issues["open"]
+            top_types  = mod_issues["types"]
+
+            # Colour the card border by severity
+            if high_iss > 0:
+                border_clr = "#ff4444"
+                badge_clr  = "#ff4444"
+                badge_txt  = f"{high_iss} HIGH"
+            elif total_iss > 0:
+                border_clr = "#ffaa00"
+                badge_clr  = "#ffaa00"
+                badge_txt  = f"{total_iss} issues"
+            else:
+                border_clr = "#1e2a3a"
+                badge_clr  = "#44ff44"
+                badge_txt  = "✓ clean"
+
+            # Top issue types as small tags
+            type_tags = " ".join(
+                f"<span style='background:#1e2a3a;border-radius:4px;padding:1px 6px;"
+                f"font-size:.65rem;color:#9aa8b8;margin-right:3px;'>{t}</span>"
+                for t in list(top_types.keys())[:2]
+            )
+
             with cols[i % n_cols]:
                 st.markdown(f"""
-                <div class="card">
-                  <div style='font-size:.88rem;font-weight:700;color:#00d4ff;margin-bottom:.25rem;'>{mod}</div>
-                  <div style='font-size:.74rem;color:#6b7280;line-height:1.6;'>
-                    📄 {len(mpages)} page(s)<br>
-                    ⏱️ {avg_lt:.2f}s avg load<br>
-                    <span style='color:{e_clr};'>● {errs} error(s)</span>
+                <div style='background:#111827;border:1px solid {border_clr};border-radius:10px;
+                            padding:.85rem 1rem;margin-bottom:.5rem;'>
+                  <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:.35rem;'>
+                    <span style='font-size:.88rem;font-weight:700;color:#00d4ff;'>{mod}</span>
+                    <span style='font-size:.7rem;font-weight:700;color:{badge_clr};
+                                 background:{badge_clr}22;border-radius:12px;padding:2px 8px;'>
+                      {badge_txt}
+                    </span>
+                  </div>
+                  <div style='font-size:.75rem;color:#6b7280;line-height:1.75;'>
+                    📄 <b style='color:#9aa8b8;'>{len(mpages)}</b> page(s) &nbsp;·&nbsp;
+                    ⏱️ <b style='color:#9aa8b8;'>{avg_lt:.2f}s</b> avg load<br>
+                    ⚠️ <b style='color:{badge_clr};'>{total_iss}</b> total issues
+                    &nbsp;(<b style='color:#ff6b6b;'>{high_iss}</b> high · 
+                    <b style='color:#ffa94d;'>{open_iss}</b> open)<br>
+                    {type_tags if type_tags else ""}
                   </div>
                 </div>
                 """, unsafe_allow_html=True)
                 for p in mpages[:2]:
                     sc    = p.get("status_code", "?")
                     s_clr = "#44ff44" if sc == 200 else "#ff4444"
-                    short = ("…" + p.get("url","")[-34:]) if len(p.get("url","")) > 34 else p.get("url","")
+                    short = ("…" + p.get("url","")[-32:]) if len(p.get("url","")) > 32 else p.get("url","")
                     st.markdown(
                         f"<div style='font-size:.67rem;color:#374151;padding:.1rem .3rem;'>"
                         f"<span style='color:{s_clr};'>[{sc}]</span> {short}</div>",
                         unsafe_allow_html=True,
                     )
                 if len(mpages) > 2:
-                    st.markdown(f"<div style='font-size:.67rem;color:#374151;padding:.05rem .3rem;'>+ {len(mpages)-2} more…</div>", unsafe_allow_html=True)
+                    st.markdown(
+                        f"<div style='font-size:.67rem;color:#374151;padding:.05rem .3rem;'>"
+                        f"+ {len(mpages)-2} more pages</div>",
+                        unsafe_allow_html=True,
+                    )
 
     # ── Crawl summary table ───────────────────────────────────
     divider("CRAWL SUMMARY")
