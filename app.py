@@ -305,22 +305,45 @@ pages       = crawl_data.get("pages", [])
 if page == "🌐 Website Overview":
 
     st.markdown("## 🌐 Website Overview")
-    section_desc(
-        "A snapshot of what the crawler found: how many pages were visited, how many issues exist, "
-        "which site sections were detected, and an overall quality score across 7 categories."
+
+    # ── KPI strip ─────────────────────────────────────────────
+    # Each card shows a single number from the crawl + a sub-label explaining what it means.
+    high_count_kpi  = int((df["severity"] == "High").sum()) if df is not None and not df.empty else 0
+    open_count_kpi  = int(df["is_open"].sum()) if df is not None and not df.empty else 0
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric(
+        "🌐 Pages Crawled",
+        crawl_data.get("total_pages", 0),
+        help="Number of unique pages the crawler actually visited (max 50).",
+    )
+    c2.metric(
+        "⚠️ Issues Found",
+        len(issues),
+        delta=f"{high_count_kpi} critical",
+        delta_color="inverse",
+        help=f"Total issues detected. {high_count_kpi} are High-severity (need immediate attention). {open_count_kpi} are still Open.",
+    )
+    c3.metric(
+        "📦 Site Sections",
+        len(crawl_data.get("modules", [])),
+        help="Distinct functional areas detected from URL patterns — e.g. /login → Authentication, /cart → Cart.",
+    )
+    c4.metric(
+        "🔗 Broken Links",
+        len(crawl_data.get("broken_links", [])),
+        delta="should be 0" if len(crawl_data.get("broken_links", [])) > 0 else "✓ none found",
+        delta_color="inverse" if len(crawl_data.get("broken_links", [])) > 0 else "normal",
+        help="Links that returned HTTP 404/5xx or could not be reached at all.",
+    )
+    c5.metric(
+        "⏱️ Crawl Time",
+        f"{crawl_data.get('crawl_time', 0)}s",
+        help="Wall-clock time to complete the crawl. Longer times may indicate slow server response.",
     )
 
-    # ── KPI strip ────────────────────────────────────────────
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("🌐 Pages Crawled",   crawl_data.get("total_pages", 0))
-    c2.metric("⚠️ Issues Detected", len(issues))
-    c3.metric("📦 Modules Found",   len(crawl_data.get("modules", [])))
-    c4.metric("🔗 Broken Links",    len(crawl_data.get("broken_links", [])))
-    c5.metric("⏱️ Crawl Duration",  f"{crawl_data.get('crawl_time', 0)}s")
-
-    # ── Health gauge + category breakdown ────────────────────
+    # ── Health score gauge ────────────────────────────────────
     divider("OVERALL HEALTH SCORE")
-    section_desc("Composite score (0–100) combining all 7 category scores. The bar chart shows each category independently. The table below explains exactly what was measured and how.")
 
     col_gauge, col_cats = st.columns([1, 2])
 
@@ -349,117 +372,139 @@ if page == "🌐 Website Overview":
         fig_g.update_layout(height=230, margin=dict(t=30, b=0, l=10, r=10), **DARK)
         st.plotly_chart(fig_g, use_container_width=True)
 
-        # Grade key
-        st.markdown("""
-        <div class="info-box" style="font-size:.75rem;">
-          <b>Grade key</b><br>
-          🟢 A (80–100) — Healthy. Minor polish only.<br>
-          🟡 B (65–79) — Good, but some areas need attention.<br>
-          🟠 C (50–64) — Noticeable problems affecting real users.<br>
-          🔴 D / F (&lt;50) — Significant issues; fix before next release.
+        st.markdown(f"""
+        <div class="info-box" style="font-size:.77rem;line-height:1.7;">
+          <b>What this score means</b><br>
+          This site scored <b style="color:{color};">{score:.0f}/100</b> — Grade <b>{grade}</b>.<br><br>
+          🟢 <b>A (80–100)</b> — Healthy. Minor polish only.<br>
+          🟡 <b>B (65–79)</b> — Good overall, some gaps to close.<br>
+          🟠 <b>C (50–64)</b> — Problems noticeable to real users.<br>
+          🔴 <b>D/F (&lt;50)</b> — Fix critical issues before next release.
         </div>
         """, unsafe_allow_html=True)
 
-    # ── Category bar chart (right column) ────────────────────
+    # ── Category bar chart ────────────────────────────────────
     with col_cats:
         breakdown = health.get("breakdown", {})
         if breakdown:
-            cats     = list(breakdown.keys())
-            vals     = list(breakdown.values())
-            bar_clrs = ["#44ff44" if v >= 70 else "#ffaa00" if v >= 40 else "#ff4444" for v in vals]
+            # Sort by weight (importance): Issues first, Mobile last
+            weight_order = ["Issues", "Broken Links", "Performance", "SEO", "Accessibility", "Meta Tags", "Mobile"]
+            ordered = {k: breakdown[k] for k in weight_order if k in breakdown}
+            # Reverse so highest-weight is at top of horizontal bar chart
+            cats_ord = list(reversed(list(ordered.keys())))
+            vals_ord = [ordered[c] for c in cats_ord]
+            bar_clrs = ["#44ff44" if v >= 70 else "#ffaa00" if v >= 40 else "#ff4444" for v in vals_ord]
+
             fig_br = go.Figure(go.Bar(
-                x=vals, y=cats, orientation="h",
+                x=vals_ord, y=cats_ord, orientation="h",
                 marker_color=bar_clrs,
-                text=[f"{v:.0f}" for v in vals],
+                text=[f"{v:.0f}" for v in vals_ord],
                 textposition="inside",
                 insidetextanchor="middle",
                 hovertemplate="<b>%{y}</b><br>Score: %{x:.0f} / 100<extra></extra>",
             ))
-            fig_br.add_vline(x=70, line_dash="dot", line_color="#333",
-                             annotation_text="70 = Good", annotation_font_color="#555",
+            fig_br.add_vline(x=70, line_dash="dot", line_color="#444",
+                             annotation_text="70 = Good threshold",
+                             annotation_font_color="#888",
                              annotation_position="top right")
             fig_br.update_layout(
-                title="Category Scores (0–100)  —  green ≥70 · orange 40–70 · red <40",
-                xaxis=dict(range=[0, 115], title="Score", gridcolor="#1e2a3a"),
+                title="Category Scores — sorted by importance (top = highest weight)",
+                xaxis=dict(range=[0, 118], title="Score (0–100)", gridcolor="#1e2a3a"),
                 yaxis_title="",
-                height=230,
-                margin=dict(t=40, b=10),
+                height=260,
+                margin=dict(t=45, b=10),
                 **DARK,
             )
             st.plotly_chart(fig_br, use_container_width=True)
+            chart_note(
+                "Top categories (Issues, Broken Links, Performance) carry the most weight in the final score. "
+                "Red bars are the biggest drags on your grade — fix those first."
+            )
 
-    # ── Category explanation table (full width below gauge+chart) ──
+    # ── Category explanation table ────────────────────────────
     divider("HOW EACH CATEGORY SCORE IS CALCULATED")
     section_desc(
-        "Every score is computed by the crawler from raw HTML — no external API. "
-        "The table below shows exactly what was measured, the formula used, and a concrete example."
+        "Every number comes from inspecting raw HTML — no external API. "
+        "The table shows exactly what the crawler checked, the formula used to turn that into a 0–100 score, "
+        "and a worked example so you can verify the maths yourself."
     )
 
-    CATEGORY_META = {
-        "Issues": {
-            "icon": "⚠️", "weight": "25%",
-            "what_checked": "Number of High-severity issues relative to pages crawled",
+    CATEGORY_META = [
+        # Ordered by weight (highest first) so the table matches the bar chart above
+        {
+            "icon": "⚠️", "category": "Issues",       "weight": "25%",
+            "what_is_checked": "How many High-severity issues exist per page crawled",
             "formula": "100 − (high_issue_count ÷ pages × 50)",
-            "example": "5 high issues, 10 pages → 100 − (5÷10 × 50) = 75",
+            "worked_example": "10 high issues, 26 pages → 100 − (10÷26×50) = 81",
+            "good_score": "≥ 70 means fewer than ~0.6 high issues per page",
         },
-        "Broken Links": {
-            "icon": "🔗", "weight": "20%",
-            "what_checked": "Links returning HTTP 404 / 5xx, or that timed out",
+        {
+            "icon": "🔗", "category": "Broken Links",  "weight": "20%",
+            "what_is_checked": "Links returning HTTP 404 / 5xx or that could not connect",
             "formula": "100 − (broken_count ÷ pages × 200)",
-            "example": "2 broken links, 10 pages → 100 − (2÷10 × 200) = 60",
+            "worked_example": "10 broken links, 26 pages → 100 − (10÷26×200) = 23 (red)",
+            "good_score": "0 broken links = 100. Even 1 per 10 pages drops score to 80",
         },
-        "Performance": {
-            "icon": "⚡", "weight": "20%",
-            "what_checked": "Average page load time — measured by timing each HTTP request",
-            "formula": "100 − (avg_seconds − 1.0) × 15",
-            "example": "Avg 1.5s → score 92 · Avg 4s → score 55 · Avg 7s+ → score ~0",
+        {
+            "icon": "⚡", "category": "Performance",   "weight": "20%",
+            "what_is_checked": "Average HTTP response time across all pages (timed by crawler stopwatch)",
+            "formula": "100 − (avg_load_seconds − 1.0) × 15",
+            "worked_example": "Avg 1.5s → score 92 · Avg 3s → score 70 · Avg 5s → score 40",
+            "good_score": "Pages loading under 2.5s score above 76 (Google Core Web Vitals target)",
         },
-        "SEO": {
-            "icon": "🔍", "weight": "15%",
-            "what_checked": "Pages that have a non-empty <title> tag",
+        {
+            "icon": "🔍", "category": "SEO",           "weight": "15%",
+            "what_is_checked": "Pages that have a non-empty <title> tag",
             "formula": "pages_with_title ÷ total_pages × 100",
-            "example": "8 of 10 pages have a title tag → score 80",
+            "worked_example": "21 of 26 pages have a title → 21÷26×100 = 81",
+            "good_score": "100 = every page has a title. Missing titles lose clicks in search results",
         },
-        "Accessibility": {
-            "icon": "♿", "weight": "10%",
-            "what_checked": "<img> tags with a non-empty alt attribute (WCAG 2.1 SC 1.1.1)",
+        {
+            "icon": "♿", "category": "Accessibility", "weight": "10%",
+            "what_is_checked": "<img> tags with a non-empty alt attribute (WCAG 2.1 rule 1.1.1)",
             "formula": "images_with_alt ÷ total_images × 100",
-            "example": "20 of 25 images have alt text → score 80",
+            "worked_example": "40 of 50 images have alt text → 40÷50×100 = 80",
+            "good_score": "100 = all images described. Screen readers need this to work",
         },
-        "Meta Tags": {
-            "icon": "🏷️", "weight": "5%",
-            "what_checked": "Pages with a <meta name='description'> tag (search snippet text)",
+        {
+            "icon": "🏷️", "category": "Meta Tags",    "weight": "5%",
+            "what_is_checked": "Pages with a <meta name='description'> tag (the text shown in Google search results)",
             "formula": "pages_with_meta_desc ÷ total_pages × 100",
-            "example": "6 of 10 pages have a meta description → score 60",
+            "worked_example": "13 of 26 pages have a meta description → 50",
+            "good_score": "100 = every page controls its search snippet. Missing = Google writes its own",
         },
-        "Mobile": {
-            "icon": "📱", "weight": "5%",
-            "what_checked": "Pages with a <meta name='viewport'> tag (required for mobile layouts)",
+        {
+            "icon": "📱", "category": "Mobile",        "weight": "5%",
+            "what_is_checked": "Pages with a <meta name='viewport'> tag (tells mobile browsers how to scale the page)",
             "formula": "pages_with_viewport ÷ total_pages × 100",
-            "example": "All 10 pages have viewport tag → score 100",
+            "worked_example": "All 26 pages have viewport tag → 100",
+            "good_score": "100 = all pages are mobile-ready. Missing = page appears zoomed-out on phones",
         },
-    }
+    ]
 
-    breakdown = health.get("breakdown", {})
-    if breakdown:
+    breakdown_now = health.get("breakdown", {})
+    if breakdown_now:
         table_rows = []
-        for cat, val in breakdown.items():
-            meta   = CATEGORY_META.get(cat, {})
+        for meta in CATEGORY_META:
+            cat = meta["category"]
+            val = breakdown_now.get(cat, 0)
             status = "✅ Good" if val >= 70 else ("⚠️ Needs work" if val >= 40 else "❌ Poor")
             table_rows.append({
-                "  ":              meta.get("icon", "•"),
+                " ":               meta["icon"],
                 "Category":        cat,
-                "Weight":          meta.get("weight", ""),
+                "Weight":          meta["weight"],
                 "Your Score":      f"{val:.0f} / 100",
                 "Status":          status,
-                "What is checked": meta.get("what_checked", ""),
-                "Formula":         meta.get("formula", ""),
-                "Concrete example":meta.get("example", ""),
+                "What is checked": meta["what_is_checked"],
+                "Formula":         meta["formula"],
+                "Worked example":  meta["worked_example"],
+                "Good score means":meta["good_score"],
             })
         st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
         chart_note(
-            "Final health score = Σ (category score × weight). "
-            "All values computed locally from crawled HTML — no paid API or external scoring service."
+            "Final health score = (Issues×0.25) + (Broken Links×0.20) + (Performance×0.20) + "
+            "(SEO×0.15) + (Accessibility×0.10) + (Meta Tags×0.05) + (Mobile×0.05). "
+            "All computed locally from raw HTML — no paid API."
         )
 
 
