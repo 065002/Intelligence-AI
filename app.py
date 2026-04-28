@@ -342,6 +342,41 @@ if page == "🌐 Website Overview":
         help="Wall-clock time to complete the crawl. Longer times may indicate slow server response.",
     )
 
+    # ── Why the issue count and health grade can both be high ─
+    low_count_kpi  = int((df["severity"] == "Low").sum())  if df is not None and not df.empty else 0
+    med_count_kpi  = int((df["severity"] == "Medium").sum()) if df is not None and not df.empty else 0
+    broken_count   = len(crawl_data.get("broken_links", []))
+    total_pages    = max(crawl_data.get("total_pages", 1), 1)
+
+    # Build an explanation that resolves the apparent contradiction
+    score_now = health.get("score", 0)
+    grade_now = health.get("grade", "?")
+    issue_note_parts = []
+    if high_count_kpi == 0:
+        issue_note_parts.append(f"none of the {len(issues)} issues are High-severity")
+    else:
+        issue_note_parts.append(
+            f"only {high_count_kpi} of the {len(issues)} issues are High-severity "
+            f"({high_count_kpi/total_pages:.1f} per page) — the Issues score rewards low high-severity density"
+        )
+    if broken_count > 0:
+        issue_note_parts.append(
+            f"{broken_count} broken link(s) are the biggest drag on your grade "
+            f"(Broken Links score = {health.get('breakdown',{}).get('Broken Links',0):.0f}/100)"
+        )
+    explanation = "; ".join(issue_note_parts)
+
+    st.markdown(f"""
+    <div style="background:#0f1923;border-left:3px solid #ffaa00;border-radius:0 8px 8px 0;
+                padding:.65rem 1.1rem;margin:.4rem 0 .2rem;font-size:.82rem;color:#9aa8b8;line-height:1.6;">
+      <b style="color:#ffaa00;">❓ Why does the site have {len(issues)} issues but still score {score_now:.0f}/100 (Grade {grade_now})?</b><br>
+      The health score only uses <b>High-severity</b> issues to score the Issues category —
+      Low and Medium issues ({low_count_kpi} Low + {med_count_kpi} Medium here) don't reduce that score.
+      In this crawl, {explanation}.
+      Scroll down to the category table to see exactly how each score is calculated.
+    </div>
+    """, unsafe_allow_html=True)
+
     # ── Health score gauge ────────────────────────────────────
     divider("OVERALL HEALTH SCORE")
 
@@ -392,7 +427,7 @@ if page == "🌐 Website Overview":
             ordered = {k: breakdown[k] for k in weight_order if k in breakdown}
             # Reverse so highest-weight is at top of horizontal bar chart
             cats_ord = list(reversed(list(ordered.keys())))
-            vals_ord = [ordered[c] for c in cats_ord]
+            vals_ord = [min(ordered[c], 100) for c in cats_ord]   # cap at 100 — formula can exceed for fast pages
             bar_clrs = ["#44ff44" if v >= 70 else "#ffaa00" if v >= 40 else "#ff4444" for v in vals_ord]
 
             fig_br = go.Figure(go.Bar(
@@ -484,27 +519,49 @@ if page == "🌐 Website Overview":
 
     breakdown_now = health.get("breakdown", {})
     if breakdown_now:
+        # Compute real numbers from the crawl for live "this site" column
+        total_p   = max(crawl_data.get("total_pages", 1), 1)
+        n_high    = int((df["severity"] == "High").sum()) if df is not None and not df.empty else 0
+        n_broken  = len(crawl_data.get("broken_links", []))
+        n_title   = sum(1 for p in pages if p.get("has_title"))
+        n_meta    = sum(1 for p in pages if p.get("has_meta_description"))
+        n_vp      = sum(1 for p in pages if p.get("has_viewport"))
+        t_imgs    = sum(p.get("img_total", 0) for p in pages)
+        a_imgs    = sum(p.get("img_total", 0) - p.get("img_missing_alt", 0) for p in pages)
+        load_ts   = [p["load_time"] for p in pages if p.get("load_time", 0) > 0]
+        avg_lt    = float(np.mean(load_ts)) if load_ts else 0.0
+
+        live_calc = {
+            "Issues":       f"{n_high} high-sev issues ÷ {total_p} pages → score {min(breakdown_now.get('Issues',0),100):.0f}",
+            "Broken Links": f"{n_broken} broken ÷ {total_p} pages → score {min(breakdown_now.get('Broken Links',0),100):.0f}",
+            "Performance":  f"avg load {avg_lt:.2f}s → score {min(breakdown_now.get('Performance',0),100):.0f}",
+            "SEO":          f"{n_title} of {total_p} pages have <title> → score {min(breakdown_now.get('SEO',0),100):.0f}",
+            "Accessibility":f"{a_imgs} of {t_imgs} images have alt text → score {min(breakdown_now.get('Accessibility',0),100):.0f}",
+            "Meta Tags":    f"{n_meta} of {total_p} pages have meta desc → score {min(breakdown_now.get('Meta Tags',0),100):.0f}",
+            "Mobile":       f"{n_vp} of {total_p} pages have viewport tag → score {min(breakdown_now.get('Mobile',0),100):.0f}",
+        }
+
         table_rows = []
         for meta in CATEGORY_META:
             cat = meta["category"]
-            val = breakdown_now.get(cat, 0)
+            val = min(breakdown_now.get(cat, 0), 100)
             status = "✅ Good" if val >= 70 else ("⚠️ Needs work" if val >= 40 else "❌ Poor")
             table_rows.append({
-                " ":               meta["icon"],
-                "Category":        cat,
-                "Weight":          meta["weight"],
-                "Your Score":      f"{val:.0f} / 100",
-                "Status":          status,
-                "What is checked": meta["what_is_checked"],
-                "Formula":         meta["formula"],
-                "Worked example":  meta["worked_example"],
-                "Good score means":meta["good_score"],
+                " ":                    meta["icon"],
+                "Category":             cat,
+                "Weight":               meta["weight"],
+                "Your Score":           f"{val:.0f} / 100",
+                "Status":               status,
+                "What is checked":      meta["what_is_checked"],
+                "This site":            live_calc.get(cat, ""),
+                "Formula":              meta["formula"],
+                "Good score means":     meta["good_score"],
             })
         st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
         chart_note(
             "Final health score = (Issues×0.25) + (Broken Links×0.20) + (Performance×0.20) + "
             "(SEO×0.15) + (Accessibility×0.10) + (Meta Tags×0.05) + (Mobile×0.05). "
-            "All computed locally from raw HTML — no paid API."
+            "All values computed locally from raw HTML — no paid API."
         )
 
 
